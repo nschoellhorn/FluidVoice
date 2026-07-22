@@ -709,6 +709,15 @@ final class ASRService: ObservableObject {
             DebugLogger.shared.debug("Audio capture prewarm skipped - backend already prepared", source: "ASRService")
             return
         }
+        if let device = self.resolvedInputDeviceForCapture(),
+           AudioDevice.isBluetoothDevice(device.id)
+        {
+            DebugLogger.shared.debug(
+                "Audio capture prewarm skipped - Bluetooth input '\(device.name)' stays released to preserve A2DP playback",
+                source: "ASRService"
+            )
+            return
+        }
 
         let startedAt = Date().timeIntervalSince1970
         if SettingsStore.shared.experimentalDirectAudioCaptureEnabled,
@@ -725,6 +734,20 @@ final class ASRService: ObservableObject {
             self.retireAudioEngine(reason: "prewarm_failed")
             DebugLogger.shared.warning("Audio engine prewarm failed: \(error.localizedDescription)", source: "ASRService")
         }
+    }
+
+    /// Whether the input device backing the current (or just-stopped) capture
+    /// is a Bluetooth device. Checks the prepared direct input first since it
+    /// pins a concrete device ID; otherwise falls back to the device the next
+    /// capture would resolve to.
+    private func capturedInputDeviceIsBluetooth() -> Bool {
+        if let directAudioInput = self.directAudioInput {
+            return AudioDevice.isBluetoothDevice(directAudioInput.deviceID)
+        }
+        if self.hasWarmAudioEngine, let device = self.resolvedInputDeviceForCapture() {
+            return AudioDevice.isBluetoothDevice(device.id)
+        }
+        return false
     }
 
     private func resolvedInputDeviceForCapture() -> AudioDevice.Device? {
@@ -1521,10 +1544,15 @@ final class ASRService: ObservableObject {
         self.audioCapturePipeline.finishRecording()
 
         // A prepared direct IOProc owns only fixed memory and registration; it
-        // does not run hardware, show the mic indicator, or hold Bluetooth in
-        // headset mode. Keep it prepared across idle periods. The heavier
-        // AVAudioEngine fallback retains its existing bounded timeout.
-        if self.directAudioInput != nil {
+        // does not run hardware or show the mic indicator. Keep it prepared
+        // across idle periods. The heavier AVAudioEngine fallback retains its
+        // existing bounded timeout. Bluetooth inputs are the exception: the
+        // registered IOProc keeps this process listed as an input client, and
+        // macOS holds the device in the headset (HFP) profile until the client
+        // disappears — playback quality stays degraded (#626 follow-up).
+        if self.capturedInputDeviceIsBluetooth() {
+            self.retireAudioEngine(reason: "bluetooth_input_release")
+        } else if self.directAudioInput != nil {
             self.audioEngineStandbyTask?.cancel()
             self.audioEngineStandbyTask = nil
             DebugLogger.shared.debug("♻️ Direct audio capture remains prepared", source: "ASRService")

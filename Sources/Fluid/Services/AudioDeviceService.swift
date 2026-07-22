@@ -115,6 +115,28 @@ enum AudioDevice {
         return self.listAllDevices().first { $0.uid == uid }?.id
     }
 
+    static func transportType(_ devId: AudioObjectID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(devId, &address, 0, nil, &size, &transport)
+        return status == noErr ? transport : nil
+    }
+
+    /// While this process keeps an input client (registered IOProc or bound
+    /// AUHAL) on a Bluetooth device, macOS holds the device in the low-quality
+    /// headset (HFP) profile even after IO has stopped, so playback stays
+    /// degraded until the client is destroyed.
+    static func isBluetoothDevice(_ devId: AudioObjectID) -> Bool {
+        guard let transport = self.transportType(devId) else { return false }
+        return transport == kAudioDeviceTransportTypeBluetooth
+            || transport == kAudioDeviceTransportTypeBluetoothLE
+    }
+
     private static func getDefaultDeviceId(selector: AudioObjectPropertySelector) -> AudioObjectID? {
         var address = AudioObjectPropertyAddress(
             mSelector: selector,
